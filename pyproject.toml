@@ -1,0 +1,19 @@
+[project]
+name = "x-signal-engine"
+version = "0.1.0"
+description = "Focused AI engineering signal refinery for X and official lab sources."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "twscrape>=0.17.0",
+]
+
+[project.scripts]
+x-signal-engine = "x_signal_engine.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true

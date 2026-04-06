@@ -7,7 +7,7 @@ Current slice:
 - official company/newsroom ingestion
 - source routing into `official_company`, `trusted_creator`, and `broad_discovery`
 - external article expansion for linked blog posts shared on X
-- browser-backed X expansion through the Playwright CLI, including built-in X Article URLs when present
+- browser-backed X expansion through the Playwright CLI, starting from the tweet status page and following built-in X Article entry points when present
 - article validation before scoring
 - OpenRouter-backed scoring with deterministic fallback
 - storage-backed seen-item checkpointing so old items stop re-alerting and re-appending
@@ -26,6 +26,12 @@ Live discovery from X plus official sources:
 
 ```bash
 uv run x-signal-engine --dry-run --live-x --limit-per-query 5
+```
+
+Live discovery with browser expansion diagnostics:
+
+```bash
+uv run x-signal-engine --dry-run --live-x --limit-per-query 5 --expansion-debug
 ```
 
 Show recent stored items:
@@ -90,6 +96,7 @@ Scoring is article-centric:
 - X search results are candidate pointers, not final content.
 - Official articles are fetched directly and normalized as canonical content.
 - Shortlisted X candidates are expanded in a real browser before they are ranked whenever browser expansion is enabled.
+- For X-native articles, the browser expansion now starts on the tweet status page, looks for the in-product article view you would normally click into, and falls back to the direct `x.com/i/article/...` URL only when needed.
 - Telegram is selective: only the final top-3 digest is sent, and only when the editorial bar is met.
 
 ## Notes
@@ -102,7 +109,7 @@ Live behavior now biases toward expanded long-form material:
 - broad-discovery X candidates must be article-like, not just relevant posts
 - X candidates are locally gated by views, bookmarks, likes, or explicit priority matches
 - linked external articles are fetched directly when a tweet points to a real writeup
-- built-in X Articles expand from their `x.com/i/article/...` URL instead of the status page when available
+- built-in X Articles now open from the tweet status page first, then follow the in-product article view or fall back to `x.com/i/article/...` when the page metadata is clearer than the DOM
 - already-stored items are treated as seen and skipped before they can consume digest or markdown budget
 - preview-only items are penalized relative to expanded canonical articles
 - non-dry runs send only the final morning digest, not every high-scoring item

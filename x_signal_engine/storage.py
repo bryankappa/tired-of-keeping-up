@@ -23,9 +23,10 @@ class SeenItemLookup:
         candidates = {
             normalize_url_key(item.url),
             normalize_url_key(item.canonical_url),
-            normalize_url_key(item.metadata.get("status_url", "")),
-            normalize_url_key(item.metadata.get("article_url", "")),
-            normalize_url_key(item.metadata.get("external_article_url", "")),
+            normalize_url_key(str(item.metadata.get("status_url", ""))),
+            normalize_url_key(str(item.metadata.get("article_url", ""))),
+            normalize_url_key(str(item.metadata.get("external_article_url", ""))),
+            normalize_url_key(str(item.metadata.get("discovered_status_url", ""))),
         }
         return any(candidate and candidate in self.urls for candidate in candidates)
 
@@ -44,8 +45,12 @@ CREATE TABLE IF NOT EXISTS items (
     body_source TEXT NOT NULL DEFAULT 'preview_text',
     expansion_status TEXT NOT NULL DEFAULT 'pending',
     expansion_strategy TEXT,
+    resolution_status TEXT NOT NULL DEFAULT 'preview',
+    resolution_reason TEXT,
     article_validated INTEGER NOT NULL DEFAULT 0,
     author TEXT NOT NULL,
+    canonical_author TEXT NOT NULL DEFAULT '',
+    discovered_by_author TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     body TEXT NOT NULL,
     published_at TEXT NOT NULL,
@@ -66,6 +71,13 @@ CREATE TABLE IF NOT EXISTS item_feedback (
     feedback TEXT NOT NULL,
     note TEXT,
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS item_outputs (
+    dedupe_key TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    date_bucket TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dedupe_key, channel, date_bucket)
 );
 """
 
@@ -90,9 +102,10 @@ def upsert_item(connection: sqlite3.Connection, item: NormalizedItem, scored: Sc
         """
         INSERT INTO items (
             dedupe_key, external_id, url, canonical_url, source_name, source_kind, source_priority, route_bucket,
-            discovered_via, body_source, expansion_status, expansion_strategy, article_validated,
-            author, title, body, published_at, tags_json, metrics_json, metadata_json, score_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            discovered_via, body_source, expansion_status, expansion_strategy, resolution_status, resolution_reason,
+            article_validated, author, canonical_author, discovered_by_author, title, body, published_at,
+            tags_json, metrics_json, metadata_json, score_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(dedupe_key) DO UPDATE SET
             external_id=excluded.external_id,
             url=excluded.url,
@@ -105,7 +118,11 @@ def upsert_item(connection: sqlite3.Connection, item: NormalizedItem, scored: Sc
             body_source=excluded.body_source,
             expansion_status=excluded.expansion_status,
             expansion_strategy=excluded.expansion_strategy,
+            resolution_status=excluded.resolution_status,
+            resolution_reason=excluded.resolution_reason,
             article_validated=excluded.article_validated,
+            canonical_author=excluded.canonical_author,
+            discovered_by_author=excluded.discovered_by_author,
             tags_json=excluded.tags_json,
             metrics_json=excluded.metrics_json,
             metadata_json=excluded.metadata_json,
@@ -124,8 +141,12 @@ def upsert_item(connection: sqlite3.Connection, item: NormalizedItem, scored: Sc
             item.body_source,
             item.expansion_status,
             item.expansion_strategy,
+            item.resolution_status,
+            item.resolution_reason,
             int(item.article_validated),
             item.author,
+            item.canonical_author or item.author,
+            item.discovered_by_author,
             item.title,
             item.body,
             item.published_at,
@@ -168,7 +189,7 @@ def load_seen_item_lookup(connection: sqlite3.Connection) -> SeenItemLookup:
             except json.JSONDecodeError:
                 parsed = {}
             if isinstance(parsed, dict):
-                for key in ["status_url", "article_url", "external_article_url"]:
+                for key in ["status_url", "article_url", "external_article_url", "discovered_status_url"]:
                     normalized = normalize_url_key(str(parsed.get(key, "")))
                     if normalized:
                         urls.add(normalized)
@@ -301,7 +322,11 @@ def ensure_item_columns(connection: sqlite3.Connection) -> None:
         "body_source": "ALTER TABLE items ADD COLUMN body_source TEXT NOT NULL DEFAULT 'preview_text'",
         "expansion_status": "ALTER TABLE items ADD COLUMN expansion_status TEXT NOT NULL DEFAULT 'pending'",
         "expansion_strategy": "ALTER TABLE items ADD COLUMN expansion_strategy TEXT",
+        "resolution_status": "ALTER TABLE items ADD COLUMN resolution_status TEXT NOT NULL DEFAULT 'preview'",
+        "resolution_reason": "ALTER TABLE items ADD COLUMN resolution_reason TEXT",
         "article_validated": "ALTER TABLE items ADD COLUMN article_validated INTEGER NOT NULL DEFAULT 0",
+        "canonical_author": "ALTER TABLE items ADD COLUMN canonical_author TEXT NOT NULL DEFAULT ''",
+        "discovered_by_author": "ALTER TABLE items ADD COLUMN discovered_by_author TEXT NOT NULL DEFAULT ''",
         "metadata_json": "ALTER TABLE items ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'",
     }
     for column, statement in required_columns.items():
@@ -352,3 +377,26 @@ def normalize_url_key(value: str) -> str:
         return stripped
     path = parsed.path.rstrip("/") or "/"
     return parse.urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", "", ""))
+
+
+def has_output_delivery(connection: sqlite3.Connection, dedupe_key: str, channel: str, date_bucket: str = "") -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM item_outputs
+        WHERE dedupe_key = ? AND channel = ? AND date_bucket = ?
+        """,
+        (dedupe_key, channel, date_bucket),
+    ).fetchone()
+    return row is not None
+
+
+def record_output_delivery(connection: sqlite3.Connection, dedupe_key: str, channel: str, date_bucket: str = "") -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO item_outputs (dedupe_key, channel, date_bucket)
+        VALUES (?, ?, ?)
+        """,
+        (dedupe_key, channel, date_bucket),
+    )
+    connection.commit()

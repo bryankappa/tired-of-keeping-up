@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from x_signal_engine.config import Settings
 from x_signal_engine.models import SourceConfig, SourceKind
 
 
-def hardcoded_sources() -> list[SourceConfig]:
-    return [
+DEFAULT_CURATED_X_AUTHORS = [
+    "simonw",
+    "latentspacepod",
+    "thorstenball",
+    "karpathy",
+    "vtrivedy10",
+    "elliotarledge",
+]
+
+
+def hardcoded_sources(settings: Settings | None = None) -> list[SourceConfig]:
+    official_sources = [
         SourceConfig(
             name="OpenAI News",
             url="https://openai.com/news/",
@@ -40,46 +51,16 @@ def hardcoded_sources() -> list[SourceConfig]:
             priority="official",
             discover_limit=5,
         ),
-        SourceConfig(
-            name="Simon Willison",
-            url="https://x.com/simonw",
-            kind=SourceKind.X_POST,
-            author_handle="simonw",
-            priority="trusted_creator",
-        ),
-        SourceConfig(
-            name="Latent Space",
-            url="https://x.com/latentspacepod",
-            kind=SourceKind.X_POST,
-            author_handle="latentspacepod",
-            priority="trusted_creator",
-        ),
-        SourceConfig(
-            name="Thorsten Ball",
-            url="https://x.com/thorstenball",
-            kind=SourceKind.X_POST,
-            author_handle="thorstenball",
-            priority="trusted_creator",
-        ),
-        SourceConfig(
-            name="Andrej Karpathy",
-            url="https://x.com/karpathy",
-            kind=SourceKind.X_POST,
-            author_handle="karpathy",
-            priority="trusted_creator",
-        ),
-        SourceConfig(
-            name="Varun Trivedi",
-            url="https://x.com/Vtrivedy10",
-            kind=SourceKind.X_POST,
-            author_handle="Vtrivedy10",
-            priority="trusted_creator",
-        ),
-        SourceConfig(
-            name="Elliot Arledge",
-            url="https://x.com/elliotarledge",
-            kind=SourceKind.X_POST,
-            author_handle="elliotarledge",
-            priority="trusted_creator",
-        ),
     ]
+    curated_handles = settings.curated_x_authors if settings and settings.curated_x_authors else DEFAULT_CURATED_X_AUTHORS
+    x_sources = [
+        SourceConfig(
+            name=handle,
+            url=f"https://x.com/{handle}",
+            kind=SourceKind.X_POST,
+            author_handle=handle,
+            priority="trusted_creator",
+        )
+        for handle in curated_handles
+    ]
+    return [*official_sources, *x_sources]

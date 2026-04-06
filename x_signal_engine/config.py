@@ -36,6 +36,8 @@ class Settings:
     x_query_since_days: int
     x_search_minutes: int
     x_search_poll_seconds: int
+    curated_x_authors: list[str]
+    curated_x_limit_per_author: int
     priority_authors: list[str]
     priority_companies: list[str]
     priority_topics: list[str]
@@ -58,6 +60,7 @@ def load_settings(base_dir: Path | None = None) -> Settings:
     data_dir.mkdir(parents=True, exist_ok=True)
     notes_dir.mkdir(parents=True, exist_ok=True)
     accounts_db = os.getenv("TWS_ACCOUNTS_DB_PATH", "data/twscrape_accounts.db")
+    priority_authors = parse_csv(os.getenv("PRIORITY_AUTHORS", ""))
     return Settings(
         base_dir=root,
         db_path=data_dir / "x_signal_engine.db",
@@ -87,7 +90,9 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         x_query_since_days=int(os.getenv("X_QUERY_SINCE_DAYS", "14")),
         x_search_minutes=int(os.getenv("X_SEARCH_MINUTES", "0")),
         x_search_poll_seconds=int(os.getenv("X_SEARCH_POLL_SECONDS", "90")),
-        priority_authors=parse_csv(os.getenv("PRIORITY_AUTHORS", "")),
+        curated_x_authors=parse_csv(os.getenv("CURATED_X_AUTHORS", "")) or priority_authors,
+        curated_x_limit_per_author=int(os.getenv("CURATED_X_LIMIT_PER_AUTHOR", "12")),
+        priority_authors=priority_authors,
         priority_companies=parse_csv(os.getenv("PRIORITY_COMPANIES", "")),
         priority_topics=parse_csv(
             os.getenv(

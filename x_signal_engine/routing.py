@@ -75,8 +75,8 @@ LOW_SIGNAL_PATTERNS = [
 ]
 
 
-def resolve_priority(username: str, body: str, settings: Settings) -> str:
-    bucket = resolve_route_bucket(username=username, body=body, settings=settings)
+def resolve_priority(username: str, body: str, settings: Settings, discovered_by: str = "") -> str:
+    bucket = resolve_route_bucket(username=username, body=body, settings=settings, discovered_by=discovered_by)
     if bucket == "trusted_creator":
         return "trusted_creator"
     if bucket == "official_company":
@@ -84,12 +84,12 @@ def resolve_priority(username: str, body: str, settings: Settings) -> str:
     return "watch"
 
 
-def resolve_route_bucket(username: str, body: str, settings: Settings) -> RouteBucket:
-    uname = username.lower()
+def resolve_route_bucket(username: str, body: str, settings: Settings, discovered_by: str = "") -> RouteBucket:
+    actors = {value.lower() for value in [username, discovered_by] if value}
     text = body.lower()
-    if uname in settings.priority_authors:
+    if actors.intersection(settings.priority_authors):
         return "trusted_creator"
-    if uname in settings.priority_companies or any(company in text for company in settings.priority_companies):
+    if actors.intersection(settings.priority_companies) or any(company in text for company in settings.priority_companies):
         return "official_company"
     if any(topic in text for topic in settings.priority_topics):
         return "broad_discovery"
@@ -134,6 +134,10 @@ def validate_article_candidate(
 def is_digest_worthy(scored: ScoredItem) -> bool:
     title = scored.item.title.lower()
     body = scored.item.body.lower()
+    if scored.item.body_source != "expanded_article":
+        return False
+    if scored.item.resolution_status == "unresolved":
+        return False
     if not scored.item.article_validated:
         return False
     if scored.total_score < 72 and scored.item.route_bucket not in {"official_company", "trusted_creator"}:

@@ -81,7 +81,7 @@ def rerank_digest_candidates(items: list[ScoredItem], settings: Settings) -> lis
         try:
             reranked = _rerank_with_openrouter(items, settings)
             if reranked:
-                return reranked[: settings.digest_max_items]
+                return sorted(reranked, key=editorial_priority, reverse=True)[: settings.digest_max_items]
         except Exception:
             pass
     editorial = sorted(items, key=editorial_priority, reverse=True)
@@ -104,6 +104,8 @@ def _score_deterministically(item: NormalizedItem, settings: Settings | None = N
     keyword_score = sum(weight for keyword, weight in IMPLEMENTATION_TERMS.items() if keyword in text)
     authority_bonus = 10 if item.route_bucket == "official_company" else 5 if item.route_bucket == "trusted_creator" else 0
     expansion_bonus = 12 if item.body_source == "expanded_article" and item.article_validated else -10
+    resolution_penalty = 18 if item.resolution_status == "unresolved" else 0
+    resolution_penalty += 12 if looks_like_broken_capture(item) else 0
     hype_penalty = sum(4 for pattern in HYPE_PATTERNS if pattern in text)
     popularity_bonus = min(4, item.bookmark_count // 100) if item.route_bucket != "official_company" else 0
     trust_bonus = load_trust_bonus(item.author, settings)
@@ -135,7 +137,8 @@ def _score_deterministically(item: NormalizedItem, settings: Settings | None = N
             + expansion_bonus
             + popularity_bonus
             + trust_bonus
-            - hype_penalty,
+            - hype_penalty
+            - resolution_penalty,
         ),
     )
     verdict = verdict_for_score(total_score, item)
@@ -193,6 +196,7 @@ def _rerank_with_openrouter(items: list[ScoredItem], settings: Settings) -> list
         "task": "Pick the 3 AI engineering articles worth reading this morning.",
         "rules": [
             "Prefer implementation density over popularity.",
+            "Prefer X-discovered canonical content over official blogs when quality is similar.",
             "Prefer expanded canonical content over X previews.",
             "Avoid sending mediocre items; return fewer than 3 if needed.",
             "Reward architecture, evals, deployment, benchmarks, failure analysis, and reproducible workflows.",
@@ -279,6 +283,7 @@ def build_user_prompt(item: NormalizedItem) -> str:
 def scored_item_from_llm(item: NormalizedItem, parsed: dict[str, object]) -> ScoredItem:
     total_score = int(parsed.get("total_score", 0))
     verdict_value = str(parsed.get("verdict", verdict_for_score(total_score, item).value))
+    verdict = restrict_verdict(item, total_score, Verdict(verdict_value))
     short_summary = str(parsed.get("short_summary") or build_short_summary(item))
     why_this_article = str(parsed.get("why_this_article") or "")
     why_it_matters = ensure_list(parsed.get("why_it_matters"), fallback=["High-signal technical content."])
@@ -300,7 +305,7 @@ def scored_item_from_llm(item: NormalizedItem, parsed: dict[str, object]) -> Sco
         item=item,
         breakdown=breakdown,
         total_score=max(0, min(100, total_score)),
-        verdict=Verdict(verdict_value),
+        verdict=verdict,
         tags=tags,
         short_summary=short_summary,
         why_this_article=why_this_article,
@@ -314,7 +319,7 @@ def scored_item_from_llm(item: NormalizedItem, parsed: dict[str, object]) -> Sco
             or build_markdown_entry(
                 item,
                 total_score,
-                verdict_value,
+                verdict.value,
                 short_summary,
                 why_this_article,
                 str(parsed.get("concrete_takeaway") or "Try the core idea in a small repo experiment."),
@@ -334,9 +339,10 @@ def build_markdown_entry(
     tags: list[str],
 ) -> str:
     tag_text = ", ".join(tags) if tags else "none"
+    surfaced_by = f"\n- Surfaced by: {item.discovered_by_author}" if item.discovered_by_author else ""
     return (
         f"## {item.title}\n"
-        f"- Source: {item.author} ({item.canonical_url})\n"
+        f"- Source: {item.author} ({item.canonical_url}){surfaced_by}\n"
         f"- Score: {total_score}\n"
         f"- Decision: {verdict}\n"
         f"- Tags: {tag_text}\n"
@@ -348,12 +354,16 @@ def build_markdown_entry(
 
 def build_why_it_matters(item: NormalizedItem, text: str) -> list[str]:
     reasons = []
+    if item.discovered_by_author:
+        reasons.append(f"Resolved to the original author instead of scoring the sharing post from @{item.discovered_by_author}.")
     if any(term in text for term in ["architecture", "framework", "harness"]):
         reasons.append("Explains architecture choices instead of stopping at opinion.")
     if any(term in text for term in ["eval", "benchmark", "failure analysis"]):
         reasons.append("Includes evidence loops, evaluation detail, or failure analysis.")
     if item.body_source == "expanded_article":
         reasons.append("The score is based on expanded canonical content, not a tweet preview.")
+    if item.resolution_status == "unresolved":
+        reasons.append("Extraction quality was too weak to trust for alerting.")
     if not reasons:
         reasons.append("Contains enough implementation detail to test quickly in a real workflow.")
     while len(reasons) < 3:
@@ -375,6 +385,8 @@ def build_why_this_article(item: NormalizedItem, text: str, why_it_matters: list
         clauses.append("it comes from an official source with a higher credibility floor")
     elif item.route_bucket == "trusted_creator":
         clauses.append("it comes from a creator who tends to publish technical workflow details")
+    if item.discovered_by_author:
+        clauses.append(f"the canonical content was resolved beyond a sharing post from @{item.discovered_by_author}")
     if item.body_source == "expanded_article":
         clauses.append("the selection is based on the full article text instead of a social preview")
     if any(term in text for term in ["eval", "benchmark", "failure analysis", "architecture", "kernel", "cuda", "worker", "workers"]):
@@ -439,6 +451,8 @@ def build_suspicious_points(item: NormalizedItem, text: str) -> list[str]:
     suspicious = []
     if item.body_source != "expanded_article":
         suspicious.append("Still based on preview text rather than expanded canonical content.")
+    if item.resolution_status == "unresolved":
+        suspicious.append("Canonical X article resolution failed or only the status page was captured.")
     if any(pattern in text for pattern in HYPE_PATTERNS):
         suspicious.append("Contains hype language that may overstate the value.")
     if not item.article_validated:
@@ -496,19 +510,50 @@ def clamp_score_component(value: int) -> int:
     return max(1, min(10, value))
 
 
+def looks_like_broken_capture(item: NormalizedItem) -> bool:
+    lowered_title = item.title.strip().lower()
+    lowered_body = " ".join(item.body.split()).lower()
+    if lowered_title == "x":
+        return True
+    if "this page is not supported" in lowered_body:
+        return True
+    return lowered_title.endswith("https://t.co") or lowered_body.startswith("https://t.co/")
+
+
+def restrict_verdict(item: NormalizedItem, score: int, requested: Verdict) -> Verdict:
+    maximum = verdict_for_score(score, item)
+    order = {
+        Verdict.IGNORE: 0,
+        Verdict.STORE: 1,
+        Verdict.DIGEST: 2,
+        Verdict.ALERT: 3,
+        Verdict.ALERT_AND_EXPERIMENT: 4,
+    }
+    if order[requested] > order[maximum]:
+        return maximum
+    return requested
+
+
 def editorial_priority(scored: ScoredItem) -> tuple[int, int, int, int, int]:
     route_weight = {"official_company": 3, "trusted_creator": 2, "broad_discovery": 1, "reject": 0}[scored.item.route_bucket]
     expanded_weight = 1 if scored.item.body_source == "expanded_article" else 0
+    x_discovery_weight = 1 if scored.item.discovered_via.startswith("x_") else 0
     return (
+        x_discovery_weight,
         scored.total_score,
         route_weight,
         expanded_weight,
         scored.breakdown.implementation_density,
-        scored.breakdown.actionability,
     )
 
 
 def verdict_for_score(score: int, item: NormalizedItem) -> Verdict:
+    if item.resolution_status == "unresolved":
+        return Verdict.IGNORE
+    if item.body_source != "expanded_article":
+        if item.article_validated and score >= 55:
+            return Verdict.STORE
+        return Verdict.IGNORE
     if not item.article_validated and score < 65:
         return Verdict.IGNORE
     if score >= 88 and item.body_source == "expanded_article":

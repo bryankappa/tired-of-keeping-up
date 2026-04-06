@@ -32,7 +32,7 @@ class SourceConfig:
 
 
 RouteBucket = Literal["official_company", "trusted_creator", "broad_discovery", "reject"]
-ExpansionStatus = Literal["pending", "expanded", "preview_only", "failed"]
+ExpansionStatus = Literal["pending", "expanded", "preview_only", "unresolved", "failed"]
 BodySource = Literal["preview_text", "expanded_article"]
 
 
@@ -48,18 +48,22 @@ class NormalizedItem:
     body: str
     author: str
     published_at: str
+    canonical_author: str = ""
+    discovered_by_author: str = ""
     route_bucket: RouteBucket = "broad_discovery"
     discovered_via: str = "unknown"
     body_source: BodySource = "preview_text"
     expansion_status: ExpansionStatus = "pending"
     expansion_strategy: str | None = None
+    resolution_status: str = "preview"
+    resolution_reason: str | None = None
     article_validated: bool = False
     view_count: int = 0
     bookmark_count: int = 0
     like_count: int = 0
     repost_count: int = 0
     tags: list[str] = field(default_factory=list)
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     @property
     def dedupe_key(self) -> str:
